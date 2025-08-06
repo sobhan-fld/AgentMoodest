@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, redirect, jsonify
 from tools import *
 from datetime import datetime
+from qamodel import generate_answer
 app = Flask(__name__)
 
 @app.route('/agentregister', methods=['POST'])
@@ -87,6 +88,36 @@ def get_agent(agent_id):
             return jsonify({'error': 'Agent not found'}), 404
 
         return jsonify(metadata[agent_id_str]), 200
+    except Exception as e:
+        return jsonify({'error': f'Failed to retrieve agent: {str(e)}'}), 500
+
+
+@app.route('/agent/<int:agent_id>/chat', methods=['POST'])
+def chat_with_agent(agent_id):
+    """Chat with an agent"""
+    question = request.form.get('question')
+    if not question:
+        return jsonify({'error': 'Question is required'}), 400
+    try:
+        metadata = load_metadata()
+        agent_id_str = str(agent_id)
+
+        if agent_id_str not in metadata:
+            return jsonify({'error': 'Agent not found'}), 404
+
+        agent_info = metadata[agent_id_str]
+        agent_filename = agent_info.get('filename')
+        if not agent_filename:
+            return jsonify({'error': 'Agent file not found in metadata'}), 404
+
+        agent_file_path = os.path.join('data', agent_filename)
+        if not os.path.exists(agent_file_path):
+            return jsonify({'error': 'Agent file does not exist on disk'}), 404
+
+        with open(agent_file_path, 'r', encoding='utf-8') as f:
+            document = f.read()
+        answer = generate_answer(question, [document])
+        return jsonify({'answer': answer}), 200
     except Exception as e:
         return jsonify({'error': f'Failed to retrieve agent: {str(e)}'}), 500
 
