@@ -2,67 +2,72 @@ from flask import Flask, render_template, request, redirect, jsonify
 from tools import *
 from datetime import datetime
 from qamodel import generate_answer
+from gemini import improve_agent_details
 app = Flask(__name__)
 
 @app.route('/agentregister', methods=['POST'])
 def agent_register():
     """
-    Endpoint to register an agent by uploading a text file
-    Returns: JSON with agent_id and status
+    Endpoint to register an agent by uploading a text file.
+    Saves both the original and Gemini-improved versions.
+    Returns: JSON with agent_id and status.
     """
     try:
-        # Check if file is present in request
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
 
         file = request.files['file']
 
-        # Check if file is selected
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
 
-        # Check if file type is allowed
         if not allowed_file(file.filename):
             return jsonify({'error': 'Only .txt files are allowed'}), 400
 
-        # Get next agent ID
+        # Read the original text
+        original_text = file.read().decode('utf-8')
+        improved_text = improve_agent_details(original_text)
+
+        # Generate agent ID and filenames
         agent_id = get_next_agent_id()
+        improved_filename = f"agent_{agent_id:04d}.txt"
+        original_filename = f"agent_{agent_id:04d}_original.txt"
 
-        # Create filename with agent ID
-        filename = f"agent_{agent_id:04d}.txt"
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        improved_path = os.path.join(UPLOAD_FOLDER, improved_filename)
+        original_path = os.path.join(UPLOAD_FOLDER, original_filename)
 
-        # Save the file
-        file.save(filepath)
+        # Save improved version
+        with open(improved_path, 'w', encoding='utf-8') as f:
+            f.write(improved_text)
 
-        # Load existing metadata
+        # Save original version
+        with open(original_path, 'w', encoding='utf-8') as f:
+            f.write(original_text)
+
+        # Load and update metadata
         metadata = load_metadata()
-
-        # Create agent metadata
         agent_metadata = {
             'id': agent_id,
-            'filename': filename,
-            'original_filename': file.filename,
+            'filename': improved_filename,
+            'original_filename': original_filename,
             'upload_time': datetime.now().isoformat(),
-            'file_size': os.path.getsize(filepath),
+            'file_size': os.path.getsize(improved_path),
             'status': 'registered'
         }
-
-        # Add to metadata
         metadata[str(agent_id)] = agent_metadata
-
-        # Save metadata
         save_metadata(metadata)
 
         return jsonify({
             'success': True,
             'agent_id': agent_id,
-            'message': f'Agent registered successfully with ID: {agent_id}',
-            'filename': filename
+            'message': f'Agent registered and improved successfully with ID: {agent_id}',
+            'filename': improved_filename,
+            'original_filename': original_filename
         }), 201
 
     except Exception as e:
         return jsonify({'error': f'Registration failed: {str(e)}'}), 500
+
 
 @app.route('/agents', methods=['GET'])
 def list_agents():
@@ -120,6 +125,16 @@ def chat_with_agent(agent_id):
         return jsonify({'answer': answer}), 200
     except Exception as e:
         return jsonify({'error': f'Failed to retrieve agent: {str(e)}'}), 500
+
+
+@app.route('/modelstatus', methods=['GET'])
+def model_status():
+    from qamodel import model_ready
+    if model_ready:
+        return jsonify({"status": "ready"}), 200
+    else:
+        return jsonify({"status": "loading"}), 202
+
 
 
 

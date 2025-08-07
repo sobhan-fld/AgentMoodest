@@ -1,67 +1,92 @@
 from transformers import AutoTokenizer, AutoModelForQuestionAnswering
 import torch
-import os
+import threading
 
-model_name = "deepset/roberta-base-squad2"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForQuestionAnswering.from_pretrained(model_name)
+model = None
+tokenizer = None
+model_ready = False
+
+
+def load_model():
+    global model, tokenizer, model_ready
+    model_name = "deepset/roberta-base-squad2"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForQuestionAnswering.from_pretrained(model_name)
+    model_ready = True
+    print("QA model loaded successfully.")
+
+
+# Start model loading in a background thread
+threading.Thread(target=load_model, daemon=True).start()
+
 
 def generate_answer(question: str, context: list) -> str:
-    """
-    Generate an answer based on a given question and a list of documents.
+    if not model_ready:
+        return "Model is still loading. Please wait a few seconds and try again."
 
-    Args:
-        question (str): The question to be answered.
-        context (list): A list of documents to search for the answer.
-
-    Returns:
-        str: The generated answer.
-    """
-    # Combine the documents into a single context string
     full_context = " ".join(context)
+    max_len = 512
+    doc_stride = 50
+    best_answer = ""
+    best_score = float('-inf')
 
-    # Tokenize and generate
-    inputs = tokenizer(question, full_context, return_tensors="pt")
-    with torch.no_grad():
-        outputs = model(**inputs)
+    # Tokenize question once
+    question_tokens = tokenizer.tokenize(question)
+    question_ids = tokenizer.convert_tokens_to_ids(question_tokens)
+    question_len = len(question_ids)
 
-    # Get the most likely start and end of the answer
-    answer_start_index = torch.argmax(outputs.start_logits)
-    answer_end_index = torch.argmax(outputs.end_logits)
+    # Tokenize full context (without truncating)
+    context_tokens = tokenizer.tokenize(full_context)
 
-    # Get the answer tokens and decode them
+    # Sliding window
+    for i in range(0, len(context_tokens), max_len - question_len - doc_stride):
+        window_tokens = context_tokens[i:i + max_len - question_len - 3]  # [CLS] + Q + SEP + C + SEP
+
+        tokens = tokenizer.build_inputs_with_special_tokens(
+            tokenizer.convert_tokens_to_ids(question_tokens),
+            tokenizer.convert_tokens_to_ids(window_tokens)
+        )
+        inputs = tokenizer.prepare_for_model(
+            tokenizer.convert_tokens_to_ids(question_tokens),
+            tokenizer.convert_tokens_to_ids(window_tokens),
+            return_tensors="pt",
+            max_length=max_len,
+            truncation=True,
+            padding="max_length"
+        )
+
+        with torch.no_grad():
+            outputs = model(**inputs)
+
+        start_logits = outputs.start_logits
+        end_logits = outputs.end_logits
+
+        # Get best start-end pair for this window
+        answer_start = torch.argmax(start_logits)
+        answer_end = torch.argmax(end_logits)
+
+        score = start_logits[0][answer_start] + end_logits[0][answer_end]
+
+        if answer_end >= answer_start and score > best_score:
+            best_score = score.item()
+            answer_ids = inputs['input_ids'][0][answer_start:answer_end + 1]
+            best_answer = tokenizer.decode(answer_ids, skip_special_tokens=True)
+
     question = question.lower()
-    predict_answer_tokens = inputs.input_ids[0, answer_start_index : answer_end_index + 1]
-    answer = tokenizer.decode(predict_answer_tokens)
-    if answer == "<s>" and question == "hi":
-        answer = "Hi how can I help you today?"
-    elif answer == "<s>" and question == "bye":
-        answer = "Bye! Have a great day!"
-    elif answer == "<s>" and question == "thanks":
-        answer = "You're welcome! If you have any other questions, feel free to ask."
-    elif answer == "<s>" and question == "hello":
-        answer = "Hello! How can I help you today?"
-    elif answer == "<s>" and question == "goodbye":
-        answer = "Goodbye! Have a great day!"
-    elif answer == "<s>" and question == "thank you":
-        answer = "You're welcome! If you have any other questions, feel free to ask."
-    elif answer == "<s>" and question == "good morning":
-        answer = "Good morning! How can I help you today?"
-    elif answer == "<s>" and question == "good afternoon":
-        answer = "Good afternoon! How can I help you today?"
-    elif answer == "<s>":
-        answer = "I don't know, I will ask for a human agent to help you."
-    
-    
-    # print("--------------------------------")
-    # print("Question:", question)
-    # print("Answer:", answer)
+    if not best_answer.strip() or best_answer == "<s>":
+        greetings = {
+            "hi": "Hi, how can I help you today?",
+            "hello": "Hello! How can I help you today?",
+            "bye": "Bye! Have a great day!",
+            "goodbye": "Goodbye! Have a great day!",
+            "thanks": "You're welcome! Let me know if you have more questions.",
+            "thank you": "You're welcome!",
+            "good morning": "Good morning! How can I help you today?",
+            "good afternoon": "Good afternoon! How can I help you today?",
+        }
+        best_answer = greetings.get(question, "I don't know. I'll forward this to a human agent.")
 
-    return answer
-
-
-
-
+    return best_answer
 
 #test code
 # folder_path = "testdata"
