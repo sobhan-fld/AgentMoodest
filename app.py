@@ -1,7 +1,7 @@
 from flask import Flask, render_template, request, redirect, jsonify
 from tools import *
 from datetime import datetime
-from qamodel import generate_answer
+from qamodel2 import generate_answer
 from gemini import improve_agent_details
 app = Flask(__name__)
 
@@ -139,4 +139,4 @@ def model_status():
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)
